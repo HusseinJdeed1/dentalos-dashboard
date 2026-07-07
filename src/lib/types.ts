@@ -1,0 +1,26 @@
+export type ThemeId = 'dental-clean' | 'soft-rose' | 'navy-pro' | 'luxury-beige' | 'emerald';
+export type Role = 'admin' | 'doctor' | 'secretary';
+export type AppointmentStatus = 'pending' | 'confirmed' | 'arrived' | 'completed' | 'cancelled' | 'no_show';
+export type PlanStatus = 'active' | 'completed' | 'cancelled' | 'paused';
+
+export type Clinic = { id: string; name: string; phone?: string | null; address?: string | null; logo_url?: string | null; theme_id?: ThemeId | null; currency_code?: string | null; currency_symbol?: string | null; clinic_timezone?: string | null; created_at?: string };
+export type StaffUser = { id: string; clinic_id: string; user_id: string; email?: string | null; full_name: string; role: Role; phone?: string | null; avatar_url?: string | null; is_active?: boolean | null; created_at?: string; last_seen_at?: string | null };
+export type PatientStatus = 'active' | 'archived';
+export type Patient = { id: string; clinic_id: string; full_name: string; phone: string; birth_date?: string | null; gender?: 'male' | 'female' | null; address?: string | null; medical_notes?: string | null; status?: PatientStatus | null; archived_at?: string | null; created_at?: string };
+export type Service = { id: string; clinic_id: string; name: string; category?: string | null; description?: string | null; price: number; duration_minutes: number; is_installment_available?: boolean; is_active: boolean; created_at?: string };
+export type Appointment = { id: string; clinic_id: string; patient_id: string; service_id?: string | null; appointment_date: string; appointment_time: string; status: AppointmentStatus; treatment_cost?: number | null; notes?: string | null; patients?: Patient; services?: Service };
+export type Visit = { id: string; clinic_id: string; patient_id: string; treatment_plan_id?: string | null; appointment_id?: string | null; service_id?: string | null; visit_date: string; session_number?: number | null; procedure_done?: string | null; doctor_notes?: string | null; next_visit_date?: string | null; created_at?: string; services?: Service; treatment_plans?: TreatmentPlan; visit_teeth?: VisitTooth[] };
+export type TreatmentPlan = { id: string; clinic_id: string; patient_id: string; service_id?: string | null; title: string; dental_category?: string | null; total_amount: number; discount_amount: number; final_amount: number; paid_amount: number; remaining_amount: number; status: PlanStatus; start_date?: string | null; expected_end_date?: string | null; notes?: string | null; patients?: Patient; services?: Service; created_at?: string };
+export type Payment = { id: string; clinic_id: string; patient_id: string; treatment_plan_id?: string | null; installment_id?: string | null; amount: number; payment_method: 'cash' | 'transfer' | 'card' | 'other'; payment_type: 'down_payment' | 'installment' | 'full_payment' | 'extra_payment' | 'refund'; payment_date: string; notes?: string | null; receipt_number?: string | null; created_by?: string | null; created_at?: string; patients?: Patient; treatment_plans?: TreatmentPlan; installments?: Installment | null };
+export type Installment = { id: string; clinic_id: string; patient_id: string; treatment_plan_id?: string | null; installment_number?: number | null; due_date: string; amount: number; paid_amount: number; status: 'pending' | 'partial' | 'paid' | 'cancelled'; notes?: string | null; treatment_plans?: TreatmentPlan; created_at?: string };
+export type Expense = { id: string; clinic_id: string; category: string; amount: number; expense_date: string; payment_method: 'cash' | 'transfer' | 'card' | 'other'; notes?: string | null };
+
+export type WorkingHour = { id?: string; clinic_id: string; day_of_week: number; is_open: boolean; start_time: string; end_time: string; break_start?: string | null; break_end?: string | null; slot_duration_minutes: number; created_at?: string };
+
+export type PatientImage = { id: string; clinic_id: string; patient_id: string; image_data: string; description?: string | null; file_name?: string | null; file_type?: string | null; file_size?: number | null; storage_path?: string | null; created_at?: string };
+
+export type ActivityLog = { id: string; clinic_id: string; staff_id?: string | null; action: string; entity_type: string; entity_id?: string | null; old_value?: Record<string, unknown> | null; new_value?: Record<string, unknown> | null; created_at?: string; staff_users?: StaffUser | null };
+
+export type DentalChartRow = { id: string; clinic_id: string; patient_id: string; tooth_number: string; status: string; procedure_name?: string | null; notes?: string | null; updated_by?: string | null; last_visit_id?: string | null; updated_at?: string | null; created_at?: string };
+export type VisitTooth = { id: string; clinic_id: string; patient_id: string; visit_id: string; tooth_number: string; procedure_done: string; old_status?: string | null; new_status: string; notes?: string | null; created_by?: string | null; created_at?: string; visits?: Visit | null };
+export type FinancialAuditLog = { id: string; clinic_id: string; staff_id?: string | null; action: string; entity_type: string; entity_id?: string | null; old_value?: Record<string, unknown> | null; new_value?: Record<string, unknown> | null; reason?: string | null; created_at?: string; staff_users?: StaffUser | null };
