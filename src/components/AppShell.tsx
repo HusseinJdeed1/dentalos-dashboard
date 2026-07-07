@@ -141,6 +141,77 @@ function getInitials(name?: string | null) {
   return clean.split(/\s+/).slice(0, 2).map((part) => part[0]).join('');
 }
 
+type SupabaseLikeError = {
+  message?: string;
+  name?: string;
+  code?: string;
+  status?: number;
+};
+
+function getErrorDetails(error: unknown) {
+  const value = (error || {}) as SupabaseLikeError;
+  return {
+    message: String(value.message || ''),
+    name: String(value.name || ''),
+    code: String(value.code || ''),
+    status: Number(value.status || 0)
+  };
+}
+
+function isMissingAuthSessionError(error: unknown) {
+  const { message, name, code } = getErrorDetails(error);
+  return (
+    name === 'AuthSessionMissingError' ||
+    code === 'session_not_found' ||
+    message.toLowerCase().includes('auth session missing') ||
+    message.toLowerCase().includes('session not found')
+  );
+}
+
+function isDeletedAuthUserError(error: unknown) {
+  const { message, code, status } = getErrorDetails(error);
+  const normalizedMessage = message.toLowerCase();
+
+  return (
+    code === 'user_not_found' ||
+    status === 404 ||
+    normalizedMessage.includes('user from sub claim in jwt does not exist') ||
+    normalizedMessage.includes('user not found')
+  );
+}
+
+function removeStoredSupabaseAuth() {
+  if (typeof window === 'undefined') return;
+
+  const shouldRemove = (key: string) => {
+    const normalizedKey = key.toLowerCase();
+    return (
+      normalizedKey.startsWith('sb-') ||
+      normalizedKey.includes('supabase.auth.token') ||
+      normalizedKey.includes('auth-token')
+    );
+  };
+
+  for (const key of Object.keys(window.localStorage)) {
+    if (shouldRemove(key)) window.localStorage.removeItem(key);
+  }
+
+  for (const key of Object.keys(window.sessionStorage)) {
+    if (shouldRemove(key)) window.sessionStorage.removeItem(key);
+  }
+}
+
+async function clearInvalidAuthSession() {
+  try {
+    await supabase.auth.signOut({ scope: 'local' });
+  } catch {
+    // قد يفشل signOut إذا كان المستخدم قد حُذف من Supabase.
+    // لذلك نكمل بتنظيف مفاتيح المصادقة المحلية يدويًا.
+  } finally {
+    removeStoredSupabaseAuth();
+  }
+}
+
 export type AppContext = { clinic: Clinic | null; staff: StaffUser | null; refreshClinic: () => Promise<void>; refreshStaff: () => Promise<void> };
 
 export function AppShell({ children }: { children: (ctx: AppContext) => React.ReactNode }) {
@@ -181,14 +252,36 @@ export function AppShell({ children }: { children: (ctx: AppContext) => React.Re
 
   async function refreshClinic() {
     if (!staff?.clinic_id) return;
-    const { data, error } = await supabase.from('clinics').select('*').eq('id', staff.clinic_id).single();
-    if (!error) setClinic(data as Clinic | null);
+
+    const { data, error } = await supabase
+      .from('clinics')
+      .select('*')
+      .eq('id', staff.clinic_id)
+      .maybeSingle();
+
+    if (error) {
+      console.error('Clinic refresh failed', error);
+      return;
+    }
+
+    setClinic(data as Clinic | null);
   }
 
   async function refreshStaff() {
     if (!staff?.id) return;
-    const { data, error } = await supabase.from('staff_users').select('*').eq('id', staff.id).single();
-    if (!error) setStaff(data as StaffUser | null);
+
+    const { data, error } = await supabase
+      .from('staff_users')
+      .select('*')
+      .eq('id', staff.id)
+      .maybeSingle();
+
+    if (error) {
+      console.error('Staff refresh failed', error);
+      return;
+    }
+
+    setStaff(data as StaffUser | null);
   }
 
   useEffect(() => {
@@ -198,57 +291,124 @@ export function AppShell({ children }: { children: (ctx: AppContext) => React.Re
   }, []);
 
   useEffect(() => {
+    let active = true;
+
+    async function redirectToLogin(clearStoredSession = false) {
+      if (clearStoredSession) {
+        await clearInvalidAuthSession();
+      }
+
+      if (!active || typeof window === 'undefined') return;
+
+      setStaff(null);
+      setClinic(null);
+      setOfflineBoot(false);
+      setBootError('');
+      window.location.replace('/login');
+    }
+
     async function boot() {
       try {
         setBootError('');
 
         const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
-        if (sessionError) throw sessionError;
+
+        if (sessionError) {
+          if (isMissingAuthSessionError(sessionError) || isDeletedAuthUserError(sessionError)) {
+            await redirectToLogin(true);
+            return;
+          }
+          throw sessionError;
+        }
+
         if (!sessionData.session) {
-          router.replace('/login');
+          await redirectToLogin(false);
           return;
         }
 
-        const { data, error } = await supabase.auth.getUser();
-        if (error) {
-          const message = String(error.message || '');
-          const name = String(error.name || '');
-          if (name === 'AuthSessionMissingError' || message.includes('Auth session missing')) {
-            router.replace('/login');
+        const { data: userData, error: userError } = await supabase.auth.getUser();
+
+        if (userError) {
+          if (isMissingAuthSessionError(userError) || isDeletedAuthUserError(userError)) {
+            await redirectToLogin(true);
             return;
           }
-          throw error;
+          throw userError;
         }
-        if (!data.user) { router.replace('/login'); return; }
-        const { data: staffRow, error: staffError } = await supabase.from('staff_users').select('*').eq('user_id', data.user.id).single();
-        if (staffError) throw staffError;
-        if (!staffRow) { setLoading(false); return; }
-        if (staffRow.is_active === false) {
-          setBootError('تم تعطيل هذا الحساب من إدارة الفريق. تواصل مع الطبيب أو مدير العيادة.');
-          setLoading(false);
+
+        const user = userData.user;
+        if (!user) {
+          await redirectToLogin(true);
           return;
         }
+
+        const { data: staffRow, error: staffError } = await supabase
+          .from('staff_users')
+          .select('*')
+          .eq('user_id', user.id)
+          .maybeSingle();
+
+        if (staffError) throw staffError;
+
+        if (!staffRow) {
+          if (!active) return;
+          setStaff(null);
+          setClinic(null);
+          setOfflineBoot(false);
+          setBootError('');
+          return;
+        }
+
+        if (staffRow.is_active === false) {
+          if (!active) return;
+          setStaff(staffRow as StaffUser);
+          setClinic(null);
+          setOfflineBoot(false);
+          setBootError('تم تعطيل هذا الحساب من إدارة الفريق. تواصل مع الطبيب أو مدير العيادة.');
+          return;
+        }
+
+        const { data: clinicRow, error: clinicError } = await supabase
+          .from('clinics')
+          .select('*')
+          .eq('id', staffRow.clinic_id)
+          .maybeSingle();
+
+        if (clinicError) throw clinicError;
+
+        if (!clinicRow) {
+          if (!active) return;
+          setStaff(staffRow as StaffUser);
+          setClinic(null);
+          setOfflineBoot(false);
+          setBootError('الحساب مرتبط بعيادة غير موجودة. تحقق من سجل العيادة وربط المستخدم في Supabase.');
+          return;
+        }
+
+        if (!active) return;
+
         setOfflineBoot(false);
         setStaff(staffRow as StaffUser);
+        setClinic(clinicRow as Clinic);
+
         supabase.rpc('update_own_last_seen').then(() => undefined);
-        const { data: clinicRow, error: clinicError } = await supabase.from('clinics').select('*').eq('id', staffRow.clinic_id).single();
-        if (clinicError) throw clinicError;
-        setClinic(clinicRow as Clinic | null);
-        await cacheCoreContext(staffRow as StaffUser, clinicRow as Clinic | null);
+        await cacheCoreContext(staffRow as StaffUser, clinicRow as Clinic);
         syncPendingOperations(staffRow.clinic_id).catch(() => undefined);
       } catch (error) {
-        const message = String((error as { message?: string; name?: string })?.message || '');
-        const name = String((error as { message?: string; name?: string })?.name || '');
-        if (name === 'AuthSessionMissingError' || message.includes('Auth session missing')) {
-          router.replace('/login');
-          setLoading(false);
+        if (isMissingAuthSessionError(error) || isDeletedAuthUserError(error)) {
+          await redirectToLogin(true);
           return;
         }
+
         console.error('Boot failed', error);
+
         const [cachedStaff, cachedClinic] = await Promise.all([
           getCache<StaffUser>(offlineKeys.staff()),
           getCache<Clinic>(offlineKeys.clinic())
         ]);
+
+        if (!active) return;
+
         if (!getOnlineStatus() && cachedStaff && cachedClinic && cachedStaff.is_active !== false) {
           setStaff(cachedStaff);
           setClinic(cachedClinic);
@@ -256,12 +416,18 @@ export function AppShell({ children }: { children: (ctx: AppContext) => React.Re
           setBootError('');
           return;
         }
+
         setBootError('تعذر الاتصال بالخادم أو قاعدة البيانات حالياً. تحقق من اتصال الإنترنت ثم أعد تحميل الصفحة.');
       } finally {
-        setLoading(false);
+        if (active) setLoading(false);
       }
     }
+
     boot();
+
+    return () => {
+      active = false;
+    };
   }, [router]);
 
   useEffect(() => {
@@ -556,7 +722,24 @@ export function AppShell({ children }: { children: (ctx: AppContext) => React.Re
 
   const theme = useMemo<ThemeId>(() => appearanceTheme || 'dental-clean', [appearanceTheme]);
 
-  async function logout() { await supabase.auth.signOut(); router.replace('/login'); }
+  async function logout() {
+    try {
+      const { error } = await supabase.auth.signOut();
+      if (error && !isMissingAuthSessionError(error) && !isDeletedAuthUserError(error)) {
+        console.warn('Remote sign out failed', error);
+      }
+    } catch (error) {
+      if (!isMissingAuthSessionError(error) && !isDeletedAuthUserError(error)) {
+        console.warn('Remote sign out failed', error);
+      }
+    } finally {
+      await clearInvalidAuthSession();
+      setStaff(null);
+      setClinic(null);
+      setOfflineBoot(false);
+      window.location.replace('/login');
+    }
+  }
 
   if (loading) return (
     <div data-theme="dental-clean" className="grid min-h-screen place-items-center bg-background p-6">
